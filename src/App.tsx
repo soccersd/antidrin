@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/Tabs";
 import {
   Card,
@@ -27,6 +27,16 @@ import SponsorWalletCard from "./components/SponsorWalletCard";
 import WithdrawPanel from "./components/WithdrawPanel";
 import { WalletConfig } from "./components/MultiWalletConfig";
 import OperationConfigurationCard from "./components/OperationConfigurationCard";
+import DelegationPanel, { DelegationInfo } from "./components/DelegationPanel";
+import BatchExecutor, {
+  BatchExecutorHandle,
+} from "./components/BatchExecutor";
+import { serviceFeeConfig } from "./config/serviceFeeConfig";
+import {
+  formatHexValue,
+  isValidValueInput,
+  parseValueInput,
+} from "./lib/valueParsing";
 function App() {
   const [sponsorWallet, setSponsorWallet] = useState<{
     address: string;
@@ -34,6 +44,11 @@ function App() {
   } | null>(null);
   const [walletConfigs, setWalletConfigs] = useState<WalletConfig[]>([]);
   const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
+  const [delegations, setDelegations] = useState<Record<string, DelegationInfo>>({});
+  const [serviceFeeEnabled, setServiceFeeEnabled] = useState(
+    serviceFeeConfig.enabled,
+  );
+  const batchExecutorRef = useRef<BatchExecutorHandle>(null);
   useEffect(() => {
     if (walletConfigs.length === 0) {
       setSelectedWalletId(null);
@@ -44,6 +59,84 @@ function App() {
       setSelectedWalletId(walletConfigs[0].id);
     }
   }, [walletConfigs, selectedWalletId]);
+
+  const handleServiceFeeToggle = (enabled: boolean) => {
+    setServiceFeeEnabled(enabled);
+    serviceFeeConfig.enabled = enabled;
+    const feeNumerator = Math.round(
+      (serviceFeeConfig.feePercentage ?? 0.2) * 1000,
+    );
+    setWalletConfigs((prev) =>
+      prev.map((config) => {
+        const claimInput = config.claimValue?.trim() ?? "";
+        const transferInput = config.transferAmount?.trim() ?? "";
+        const claimAmount =
+          claimInput && isValidValueInput(claimInput)
+            ? parseValueInput(claimInput)
+            : 0n;
+        const transferAmount =
+          transferInput && isValidValueInput(transferInput)
+            ? parseValueInput(transferInput)
+            : 0n;
+        const baseAmount = claimAmount > transferAmount ? claimAmount : transferAmount;
+        // Whenever the fee toggle flips we normalise each wallet's cached fee so
+        // the downstream executor doesn't have to recalculate on the fly.
+        const feeAmount = enabled
+          ? (baseAmount * BigInt(feeNumerator)) / 1000n
+          : 0n;
+        return {
+          ...config,
+          serviceFeeAmount: formatHexValue(feeAmount),
+        };
+      }),
+    );
+  };
+
+  const delegationReadyMap = useMemo(() => {
+    return walletConfigs.reduce<Record<string, boolean>>((acc, config) => {
+      const delegation = delegations[config.id];
+      const delegationValid =
+        !!delegation &&
+        delegation.delegated &&
+        (!delegation.expiry || delegation.expiry > Date.now() / 1000);
+
+      const hasPrivateKey = config.privateKey.trim().length > 0;
+      const hasAirdropContract = config.airdropContract.trim().length > 0;
+      const hasReceiver = config.receiverAddress.trim().length > 0;
+      const hasTokenContract =
+        config.operationType === "transfer" || config.operationType === "both"
+          ? (config.tokenContract || "").trim().length > 0
+          : true;
+      const needsClaimData =
+        config.operationType === "claim" || config.operationType === "both";
+      const hasClaimData = needsClaimData
+        ? config.claimData.trim().length > 0
+        : true;
+      const claimValid = isValidValueInput(config.claimValue);
+      const transferValid = isValidValueInput(config.transferAmount);
+
+      acc[config.id] =
+        hasPrivateKey &&
+        hasAirdropContract &&
+        hasReceiver &&
+        hasTokenContract &&
+        hasClaimData &&
+        claimValid &&
+        transferValid &&
+        delegationValid;
+      return acc;
+    }, {});
+  }, [walletConfigs, delegations]);
+
+  const hasExecutableWallet = useMemo(
+    () => Object.values(delegationReadyMap).some(Boolean),
+    [delegationReadyMap],
+  );
+
+  const handleExecuteBatch = async () => {
+    if (!batchExecutorRef.current) return;
+    await batchExecutorRef.current.executeBatch();
+  };
 
   const [isDarkMode, setIsDarkMode] = useState(false);
 
@@ -182,6 +275,14 @@ function App() {
                 selectedWalletId={selectedWalletId}
                 onConfigsChange={setWalletConfigs}
                 onSelectWallet={setSelectedWalletId}
+                delegations={delegations}
+                serviceFeeEnabled={serviceFeeEnabled}
+                onServiceFeeToggle={handleServiceFeeToggle}
+              />
+              <DelegationPanel
+                sponsorWallet={sponsorWallet}
+                walletConfigs={walletConfigs}
+                onDelegationsUpdate={setDelegations}
               />
               <OperationConfigurationCard
                 walletConfigs={walletConfigs}
@@ -193,9 +294,15 @@ function App() {
                     ),
                   )
                 }
-                onExecuteAll={() => {
-                  alert("Batch execution is triggered.");
-                }}
+                onExecuteAll={handleExecuteBatch}
+                delegationsReadyMap={delegationReadyMap}
+                disableExecute={!hasExecutableWallet}
+              />
+              <BatchExecutor
+                ref={batchExecutorRef}
+                sponsorWallet={sponsorWallet}
+                walletConfigs={walletConfigs}
+                delegations={delegations}
               />
             </div>
           </TabsContent>
