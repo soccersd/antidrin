@@ -35,7 +35,6 @@ import {
 } from "../lib/eip7702";
 import { getNetworkConfig } from "../lib/rpc";
 import { ethers } from "ethers";
-import { Alert } from "./ui/alert";
 
 export interface DelegationInfo {
   walletAddress: string;
@@ -75,19 +74,10 @@ export default function DelegationPanel({
   const [isRevoking, setIsRevoking] = useState<string | null>(null);
   const [selectedNetwork, setSelectedNetwork] = useState<string>("ethereum");
   const [copied, setCopied] = useState(false);
-  const [feedback, setFeedback] = useState<
-    { message: string; variant: "success" | "info" | "warning" | "error" } | null
-  >(null);
 
   useEffect(() => {
     setBatchContractAddress(BATCH_CONTRACT_ADDRESSES[selectedNetwork] || "");
   }, [selectedNetwork]);
-
-  useEffect(() => {
-    if (!feedback) return;
-    const timer = setTimeout(() => setFeedback(null), 4000);
-    return () => clearTimeout(timer);
-  }, [feedback]);
 
   const createDelegation = async (walletConfig: WalletConfig) => {
     if (!sponsorWallet || !batchContractAddress) return;
@@ -159,18 +149,11 @@ export default function DelegationPanel({
         onDelegationsUpdate(updated);
         return updated;
       });
-      setFeedback({
-        message: "Delegation signature generated and stored locally.",
-        variant: "success",
-      });
     } catch (error) {
       console.error("Delegation failed:", error);
-      setFeedback({
-        message: `Delegation failed: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-        variant: "error",
-      });
+      alert(
+        `Delegation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     } finally {
       setIsDelegating(null);
     }
@@ -217,18 +200,13 @@ export default function DelegationPanel({
         onDelegationsUpdate(updated);
         return updated;
       });
-      setFeedback({
-        message: "Delegation revoked successfully.",
-        variant: "info",
-      });
+
+      alert("Delegation revoked successfully");
     } catch (error) {
       console.error("Revocation failed:", error);
-      setFeedback({
-        message: `Revocation failed: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-        variant: "error",
-      });
+      alert(
+        `Revocation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     } finally {
       setIsRevoking(null);
     }
@@ -311,9 +289,6 @@ export default function DelegationPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {feedback && (
-          <Alert variant={feedback.variant}>{feedback.message}</Alert>
-        )}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label htmlFor="network">Network</Label>

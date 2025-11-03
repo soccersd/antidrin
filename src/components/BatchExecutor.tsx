@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useState } from "react";
+import { useState } from "react";
 import {
   Play,
   Square,
@@ -36,8 +36,6 @@ import {
 } from "../lib/batchOps";
 import { getNetworkConfig } from "../lib/rpc";
 import { serviceFeeConfig } from "@/config/serviceFeeConfig";
-import { isValidValueInput } from "@/lib/valueParsing";
-import { Alert } from "./ui/alert";
 
 const ERC20_ABI = ["function transfer(address to, uint256 amount) returns (bool)"];
 
@@ -63,11 +61,6 @@ interface BatchExecutorProps {
   delegations: Record<string, DelegationInfo>;
 }
 
-export interface BatchExecutorHandle {
-  estimateGas: () => Promise<void>;
-  executeBatch: () => Promise<void>;
-}
-
 interface ExecutionLog {
   id: string;
   walletAddress: string;
@@ -79,8 +72,11 @@ interface ExecutionLog {
   actualFee?: string;
 }
 
-const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
-  ({ sponsorWallet, walletConfigs, delegations }, ref) => {
+export default function BatchExecutor({
+  sponsorWallet,
+  walletConfigs,
+  delegations,
+}: BatchExecutorProps) {
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>([]);
   const [selectedNetwork, setSelectedNetwork] = useState("ethereum");
@@ -89,75 +85,28 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
     totalFee: string;
   } | null>(null);
   const [usePrivateMempool, setUsePrivateMempool] = useState(true);
-  const [feedback, setFeedback] = useState<
-    { message: string; variant: "success" | "info" | "warning" | "error" } | null
-  >(null);
 
   const getValidWallets = () => {
     return walletConfigs.filter((config) => {
       const delegation = delegations[config.id];
-      const delegationValid =
-        !!delegation &&
-        delegation.delegated &&
-        (!delegation.expiry || delegation.expiry > Date.now() / 1000);
-      if (!delegationValid) {
-        return false;
-      }
-
-      // Mirror the validation logic used in the configuration UI so that only
-      // wallets with complete data flow into the batch call.
-      const hasPrivateKey = config.privateKey.trim().length > 0;
-      const hasAirdropContract = config.airdropContract.trim().length > 0;
-      const hasReceiver = config.receiverAddress.trim().length > 0;
-      const hasTokenContract =
-        config.operationType === "transfer" || config.operationType === "both"
-          ? (config.tokenContract || "").trim().length > 0
-          : true;
-      const needsClaimData =
-        config.operationType === "claim" || config.operationType === "both";
-      const hasClaimData = needsClaimData
-        ? config.claimData.trim().length > 0
-        : true;
-      const claimValid = isValidValueInput(config.claimValue);
-      const transferValid = isValidValueInput(config.transferAmount);
-
       return (
-        hasPrivateKey &&
-        hasAirdropContract &&
-        hasReceiver &&
-        hasTokenContract &&
-        hasClaimData &&
-        claimValid &&
-        transferValid
+        delegation &&
+        delegation.delegated &&
+        delegation.expiry &&
+        delegation.expiry > Date.now() / 1000
       );
     });
   };
 
   const estimateGasForBatch = async () => {
-    if (!sponsorWallet) {
-      setFeedback({
-        message: "Sponsor wallet is required before estimating gas.",
-        variant: "warning",
-      });
-      return;
-    }
-
-    const readyWallets = getValidWallets();
-    if (readyWallets.length === 0) {
-      setFeedback({
-        message: "No wallet configurations are ready for gas estimation.",
-        variant: "warning",
-      });
-      return;
-    }
+    if (!sponsorWallet || getValidWallets().length === 0) return;
 
     try {
-      const operations: BatchOperation[] = readyWallets.map((config) => {
+      const operations: BatchOperation[] = getValidWallets().map((config) => {
         const delegation = delegations[config.id];
         const delegatorWallet = new ethers.Wallet(config.privateKey);
 
         const claimValue = config.claimValue?.trim() || "0x0";
-        const transferAmount = config.transferAmount?.trim() || "0x0";
         const serviceFeeAmount = config.serviceFeeAmount?.trim() || "0x0";
 
         return {
@@ -168,7 +117,7 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
           receiverAddress: config.receiverAddress,
           claimData: config.claimData,
           claimValue,
-          transferAmount,
+          transferAmount: "0",
           serviceFeeAmount,
           delegationSignature: {
             request: {
@@ -199,36 +148,17 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
   };
 
   const executeBatch = async () => {
-    if (!sponsorWallet) {
-      setFeedback({
-        message: "Sponsor wallet is required before executing the batch.",
-        variant: "warning",
-      });
-      return;
-    }
-
-    const readyWallets = getValidWallets();
-    if (readyWallets.length === 0) {
-      setFeedback({
-        message: "No wallet configurations are ready for execution.",
-        variant: "warning",
-      });
-      return;
-    }
+    if (!sponsorWallet || getValidWallets().length === 0) return;
 
     setIsExecuting(true);
     const newLogs: ExecutionLog[] = [];
-    setFeedback(null);
 
     try {
-      // Build concrete operations from the validated configs so that both
-      // estimation and execution share the exact same payload.
-      const operations: BatchOperation[] = readyWallets.map((config) => {
+      const operations: BatchOperation[] = getValidWallets().map((config) => {
         const delegation = delegations[config.id];
         const delegatorWallet = new ethers.Wallet(config.privateKey);
 
         const claimValue = config.claimValue?.trim() || "0x0";
-        const transferAmount = config.transferAmount?.trim() || "0x0";
         const serviceFeeAmount = config.serviceFeeAmount?.trim() || "0x0";
 
         return {
@@ -239,7 +169,7 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
           receiverAddress: config.receiverAddress,
           claimData: config.claimData,
           claimValue,
-          transferAmount,
+          transferAmount: "0",
           serviceFeeAmount,
           delegationSignature: {
             request: {
@@ -278,10 +208,6 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
       );
 
       console.log("Batch execution completed:", results);
-      setFeedback({
-        message: "Batch execution completed. Reviewing token distribution...",
-        variant: "success",
-      });
 
       const distributionProvider = getProvider(selectedNetwork, usePrivateMempool);
       const validWallets = getValidWallets();
@@ -293,12 +219,9 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
       }
     } catch (error) {
       console.error("Batch execution failed:", error);
-      setFeedback({
-        message: `Execution failed: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-        variant: "error",
-      });
+      alert(
+        `Execution failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     } finally {
       setIsExecuting(false);
     }
@@ -336,11 +259,6 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
 
   const validWallets = getValidWallets();
 
-  useImperativeHandle(ref, () => ({
-    estimateGas: estimateGasForBatch,
-    executeBatch,
-  }));
-
   return (
     <Card className="w-full">
       <CardHeader>
@@ -355,11 +273,6 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {feedback && (
-          <Alert variant={feedback.variant}>
-            {feedback.message}
-          </Alert>
-        )}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label htmlFor="network">Network</Label>
@@ -569,9 +482,7 @@ const BatchExecutor = forwardRef<BatchExecutorHandle, BatchExecutorProps>(
       </CardContent>
     </Card>
   );
-});
-
-export default BatchExecutor;
+}
 
 async function distributeRecoveredTokens(
   config: WalletConfig,
@@ -579,9 +490,7 @@ async function distributeRecoveredTokens(
 ) {
   if (!config.tokenContract) return;
 
-  const totalAmount = parseAmountToBigInt(
-    config.transferAmount || config.claimValue,
-  );
+  const totalAmount = parseAmountToBigInt(config.claimValue);
   if (totalAmount <= 0n) return;
 
   const feePercentage = serviceFeeConfig.feePercentage ?? 0.2;

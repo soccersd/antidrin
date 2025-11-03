@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Zap, Info, ChevronDown, ChevronUp, AlertCircle } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Zap, Info, ChevronDown, ChevronUp } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -14,20 +14,29 @@ import { Input } from "./ui/Input";
 import { WalletConfig } from "./MultiWalletConfig";
 import { cn } from "@/lib/utils";
 import { serviceFeeConfig } from "@/config/serviceFeeConfig";
-import {
-  formatDecimalValue,
-  formatHexValue,
-  isValidValueInput,
-  parseValueInput,
-} from "@/lib/valueParsing";
+
+const parseValueInput = (value: string): bigint => {
+  if (!value) return 0n;
+  const trimmed = value.trim();
+  if (!trimmed) return 0n;
+  try {
+    if (trimmed.startsWith("0x") || trimmed.startsWith("0X")) {
+      return BigInt(trimmed);
+    }
+    return BigInt(trimmed);
+  } catch {
+    return 0n;
+  }
+};
+
+const formatHexValue = (amount: bigint): string => `0x${amount.toString(16)}`;
+const formatDecimalValue = (amount: bigint): string => amount.toString(10);
 
 interface OperationConfigurationCardProps {
   walletConfigs: WalletConfig[];
   selectedWalletId: string | null;
   onWalletUpdate: (id: string, updates: Partial<WalletConfig>) => void;
   onExecuteAll: () => void;
-  delegationsReadyMap?: Record<string, boolean>;
-  disableExecute?: boolean;
 }
 
 const OPERATION_OPTIONS: Array<WalletConfig["operationType"]> = [
@@ -47,8 +56,6 @@ export default function OperationConfigurationCard({
   selectedWalletId,
   onWalletUpdate,
   onExecuteAll,
-  delegationsReadyMap = {},
-  disableExecute = false,
 }: OperationConfigurationCardProps) {
   const currentWallet = useMemo(
     () =>
@@ -63,75 +70,21 @@ export default function OperationConfigurationCard({
       ? `Execute All Wallets (${totalWallets})`
       : "Execute All Wallets";
 
-  const claimValueInputRaw = currentWallet?.claimValue ?? "";
-  const claimValueInput = claimValueInputRaw.trim();
-  const transferAmountInputRaw = currentWallet?.transferAmount ?? "";
-  const transferAmountInput = transferAmountInputRaw.trim();
+  const claimValueInput = currentWallet?.claimValue?.trim() ?? "";
   const feePercentage = serviceFeeConfig.feePercentage ?? 0.2;
   const feeNumerator = Math.round(feePercentage * 1000);
 
-  const [claimValueError, setClaimValueError] = useState<string | null>(null);
-  const [transferAmountError, setTransferAmountError] = useState<string | null>(
-    null,
+  const claimValueBigInt = useMemo(
+    () => parseValueInput(claimValueInput),
+    [claimValueInput],
   );
-
-  const claimValueIsValid = useMemo(() => {
-    if (!claimValueInput) return true;
-    return isValidValueInput(claimValueInput);
-  }, [claimValueInput]);
-
-  const transferAmountIsValid = useMemo(() => {
-    if (!transferAmountInput) return true;
-    return isValidValueInput(transferAmountInput);
-  }, [transferAmountInput]);
-
-  useEffect(() => {
-    setClaimValueError(
-      claimValueIsValid ? null : "Enter a decimal or 0x-prefixed hexadecimal value.",
-    );
-  }, [claimValueIsValid]);
-
-  useEffect(() => {
-    setTransferAmountError(
-      transferAmountIsValid
-        ? null
-        : "Enter a decimal or 0x-prefixed hexadecimal value.",
-    );
-  }, [transferAmountIsValid]);
-
-  const claimValueBigInt = useMemo(() => {
-    if (!claimValueIsValid) return 0n;
-    try {
-      return parseValueInput(claimValueInput || "0");
-    } catch {
-      return 0n;
-    }
-  }, [claimValueInput, claimValueIsValid]);
-
-  const transferValueBigInt = useMemo(() => {
-    if (!transferAmountIsValid) return 0n;
-    try {
-      return parseValueInput(transferAmountInput || "0");
-    } catch {
-      return 0n;
-    }
-  }, [transferAmountInput, transferAmountIsValid]);
-
-  const baseValue = useMemo(
-    () => (claimValueBigInt > transferValueBigInt ? claimValueBigInt : transferValueBigInt),
-    [claimValueBigInt, transferValueBigInt],
+  const feeBigInt = useMemo(
+    () => (claimValueBigInt * BigInt(feeNumerator)) / 1000n,
+    [claimValueBigInt, feeNumerator],
   );
-
-  const feeBigInt = useMemo(() => {
-    if (!serviceFeeConfig.enabled) return 0n;
-    // Service fees are always calculated from the larger of the claim or transfer
-    // amounts to ensure the rescue flow covers the maximum outbound value.
-    return (baseValue * BigInt(feeNumerator)) / 1000n;
-  }, [baseValue, feeNumerator, serviceFeeConfig.enabled]);
-
   const netBigInt = useMemo(
-    () => (baseValue > feeBigInt ? baseValue - feeBigInt : 0n),
-    [baseValue, feeBigInt],
+    () => (claimValueBigInt > feeBigInt ? claimValueBigInt - feeBigInt : 0n),
+    [claimValueBigInt, feeBigInt],
   );
 
   const claimValueHex = useMemo(
@@ -141,14 +94,6 @@ export default function OperationConfigurationCard({
   const claimValueDecimal = useMemo(
     () => formatDecimalValue(claimValueBigInt),
     [claimValueBigInt],
-  );
-  const transferValueHex = useMemo(
-    () => formatHexValue(transferValueBigInt),
-    [transferValueBigInt],
-  );
-  const transferValueDecimal = useMemo(
-    () => formatDecimalValue(transferValueBigInt),
-    [transferValueBigInt],
   );
   const feeHex = useMemo(() => formatHexValue(feeBigInt), [feeBigInt]);
   const feeDecimal = useMemo(
@@ -160,58 +105,6 @@ export default function OperationConfigurationCard({
     () => formatDecimalValue(netBigInt),
     [netBigInt],
   );
-
-  const showExecuteDisabledReason = useMemo(() => {
-    if (!currentWallet) return null;
-    if (!delegationsReadyMap[currentWallet.id]) {
-      return "Delegation is not active for this wallet.";
-    }
-    if (!currentWallet.privateKey.trim()) {
-      return "Private key is required.";
-    }
-    if (!currentWallet.airdropContract.trim()) {
-      return "Airdrop contract is required.";
-    }
-    if (
-      (currentWallet.operationType === "claim" ||
-        currentWallet.operationType === "both") &&
-      !currentWallet.claimData.trim()
-    ) {
-      return "Claim data is required for claim operations.";
-    }
-    if (!currentWallet.receiverAddress.trim()) {
-      return "Receiver address is required.";
-    }
-    return null;
-  }, [currentWallet, delegationsReadyMap]);
-
-  useEffect(() => {
-    if (!currentWallet) return;
-
-    if (!claimValueIsValid || !transferAmountIsValid) {
-      // Short-circuit if either field is invalid to avoid writing misleading
-      // fee data back into the wallet configuration.
-      onWalletUpdate(currentWallet.id, {
-        serviceFeeAmount: formatHexValue(0n),
-      });
-      return;
-    }
-
-    const updatedFeeHex = formatHexValue(feeBigInt);
-    if (currentWallet.serviceFeeAmount !== updatedFeeHex) {
-      // Keep the persisted configuration in sync with the derived fee so the
-      // batch executor can rely on a single source of truth.
-      onWalletUpdate(currentWallet.id, {
-        serviceFeeAmount: updatedFeeHex,
-      });
-    }
-  }, [
-    claimValueIsValid,
-    transferAmountIsValid,
-    feeBigInt,
-    currentWallet,
-    onWalletUpdate,
-  ]);
 
   const [isOperationGuideOpen, setIsOperationGuideOpen] = useState(false);
   const [isHexGuideOpen, setIsHexGuideOpen] = useState(false);
@@ -384,119 +277,17 @@ export default function OperationConfigurationCard({
                 value={currentWallet.claimValue ?? ""}
                 onChange={(e) => {
                   const raw = e.target.value;
-                  const normalized = raw.trim();
-                  const isValid = isValidValueInput(normalized) || normalized === "";
-                  if (!isValid) {
-                    setClaimValueError(
-                      "Enter a decimal or 0x-prefixed hexadecimal value.",
-                    );
-                  } else {
-                    setClaimValueError(null);
-                  }
-                  let updatedFee = feeBigInt;
-                  if (isValid) {
-                    const claimAmount = normalized ? parseValueInput(normalized) : 0n;
-                    const transferAmount = transferAmountIsValid
-                      ? transferValueBigInt
-                      : 0n;
-                    const base = claimAmount > transferAmount ? claimAmount : transferAmount;
-                    updatedFee = serviceFeeConfig.enabled
-                      ? (base * BigInt(feeNumerator)) / 1000n
-                      : 0n;
-                  }
+                  const normalized = raw.trim().length === 0 ? "0" : raw.trim();
+                  const parsed = parseValueInput(normalized);
+                  const updatedFee = (parsed * BigInt(feeNumerator)) / 1000n;
+
                   onWalletUpdate(currentWallet.id, {
                     claimValue: raw,
                     serviceFeeAmount: formatHexValue(updatedFee),
                   });
                 }}
               />
-              {claimValueError && (
-                <div className="flex items-center gap-2 text-xs text-red-600">
-                  <AlertCircle className="h-3 w-3" />
-                  {claimValueError}
-                </div>
-              )}
               {isClaimValueGuideOpen && <ClaimValueGuide />}
-            </div>
-
-            <div className="space-y-2">
-              <Label className="flex items-center gap-2">
-                Transfer Amount (WEI)
-              </Label>
-              <span className="text-xs text-muted-foreground">
-                Optional extra transfer for ERC-20 rescues (hex or decimal)
-              </span>
-              <Input
-                type="text"
-                inputMode="text"
-                autoComplete="off"
-                placeholder="Enter raw transfer value (e.g. 0x16345785d8a0000 or 0)"
-                value={currentWallet.transferAmount ?? ""}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  const normalized = raw.trim();
-                  const isValid = isValidValueInput(normalized) || normalized === "";
-                  if (!isValid) {
-                    setTransferAmountError(
-                      "Enter a decimal or 0x-prefixed hexadecimal value.",
-                    );
-                  } else {
-                    setTransferAmountError(null);
-                  }
-                  let updatedFee = feeBigInt;
-                  if (isValid) {
-                    const transferAmount = normalized
-                      ? parseValueInput(normalized)
-                      : 0n;
-                    const claimAmount = claimValueIsValid ? claimValueBigInt : 0n;
-                    const base = transferAmount > claimAmount ? transferAmount : claimAmount;
-                    updatedFee = serviceFeeConfig.enabled
-                      ? (base * BigInt(feeNumerator)) / 1000n
-                      : 0n;
-                  }
-                  onWalletUpdate(currentWallet.id, {
-                    transferAmount: raw,
-                    serviceFeeAmount: formatHexValue(updatedFee),
-                  });
-                }}
-              />
-              {transferAmountError && (
-                <div className="flex items-center gap-2 text-xs text-red-600">
-                  <AlertCircle className="h-3 w-3" />
-                  {transferAmountError}
-                </div>
-              )}
-            </div>
-
-            <div className="grid gap-4 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-4 sm:grid-cols-2">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Claim Value
-                </div>
-                <div className="text-sm font-mono">{claimValueHex}</div>
-                <div className="text-xs text-muted-foreground">{claimValueDecimal}</div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Transfer Amount
-                </div>
-                <div className="text-sm font-mono">{transferValueHex}</div>
-                <div className="text-xs text-muted-foreground">{transferValueDecimal}</div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Service Fee
-                </div>
-                <div className="text-sm font-mono">{feeHex}</div>
-                <div className="text-xs text-muted-foreground">{feeDecimal}</div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Net After Fee
-                </div>
-                <div className="text-sm font-mono">{netHex}</div>
-                <div className="text-xs text-muted-foreground">{netDecimal}</div>
-              </div>
             </div>
           </>
         )}
@@ -504,17 +295,11 @@ export default function OperationConfigurationCard({
         <div className="space-y-2">
           <Button
             className="h-12 w-full text-base font-semibold"
-            disabled={totalWallets === 0 || disableExecute}
+            disabled={totalWallets === 0}
             onClick={onExecuteAll}
           >
             {buttonLabel}
           </Button>
-          {disableExecute && showExecuteDisabledReason && (
-            <div className="flex items-center justify-center gap-2 text-xs text-red-600">
-              <AlertCircle className="h-3 w-3" />
-              {showExecuteDisabledReason}
-            </div>
-          )}
           <p className="text-center text-xs text-muted-foreground">
             Will execute up to 5 wallet configurations sequentially with
             2-second delays between operations.
